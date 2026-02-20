@@ -1192,9 +1192,6 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
         """
         Play a process. Returns True if after this call the process is playing, False otherwise.
 
-        If the process was paused and the step loop had exited (releasing the task), this method
-        restarts the step loop via create_task.
-
         :return: True if playing, False otherwise
         """
         if not self.paused:
@@ -1206,11 +1203,6 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
             return True
 
         call_with_super_check(self.on_playing)
-
-        # Restart the step loop if it had exited due to pause
-        if not self.has_terminated():
-            self.loop.create_task(self.step_until_terminated())
-
         return True
 
     @event(from_states=process_states.Waiting)
@@ -1319,7 +1311,7 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
         return self.future().result()
 
     @ensure_not_closed
-    async def step(self) -> None:
+    async def step(self) -> bool:
         """Run a step.
 
         The step is run synchronously with steps in its own process,
@@ -1327,6 +1319,7 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         The execute function running in this method is dependent on the state of the process.
 
+        :return: True if stepping should continue, False if paused and should exit step loop.
         """
         assert not self.has_terminated(), 'Cannot step, already terminated'
 
@@ -1359,12 +1352,14 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
             if self._interrupt_action and not self._interrupt_action.cancelled():
                 interrupt_exception = self._interrupt_action.cookie
                 self._interrupt_action.run(next_state)
-                # If a pause action was executed, re-raise the interruption to exit step_until_terminated()
+                # If a pause action was executed, return False to signal step_until_terminated() to exit
                 if isinstance(interrupt_exception, process_states.PauseInterruption):
-                    raise interrupt_exception
+                    return False
             else:
                 # Everything nominal so transition to the next state
                 self.transition_to(next_state)
+
+            return True
 
         finally:
             self._stepping = False
@@ -1376,17 +1371,15 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         This is the function run by the event loop (not ``step``).
 
-        If the process is paused, this method exits cleanly (catching PauseInterruption),
+        If the process is paused, this method exits cleanly (step() returns False),
         releasing the task from the queue. The process can later be resumed via a continue task.
         """
-        try:
-            while not self.has_terminated():
-                await self.step()
-        except process_states.PauseInterruption:
-            # Process was paused - exit cleanly to release the task from the queue.
-            # The process can be resumed via a continue task (play_process).
-            LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
-            return
+        while not self.has_terminated():
+            if not await self.step():
+                # Process was paused - exit to release the task from the queue.
+                # The process can be resumed via a continue task (play_process).
+                LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
+                return
 
     # endregion
 
