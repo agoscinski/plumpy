@@ -586,6 +586,7 @@ class ProcessLauncher:
 
         proc_class = self._loader.load_object(process_class)
         proc = proc_class(*init_args, **init_kwargs)
+        proc._launcher = self
         if persist and self._persister is not None:
             self._persister.save_checkpoint(proc)
 
@@ -616,6 +617,7 @@ class ProcessLauncher:
         # Do not catch exceptions here, because if these operations fail, the continue task should except and bubble up
         saved_state = self._persister.load_checkpoint(pid, tag)
         proc = cast('Process', saved_state.unbundle(self._load_context))
+        proc._launcher = self
 
         if nowait:
             # XXX: can return a reference and gracefully use task to cancel itself when the upper call stack fails
@@ -654,6 +656,7 @@ class ProcessLauncher:
 
         proc_class = self._loader.load_object(process_class)
         proc = proc_class(*init_args, **init_kwargs)
+        proc._launcher = self
         if persist and self._persister is not None:
             self._persister.save_checkpoint(proc)
 

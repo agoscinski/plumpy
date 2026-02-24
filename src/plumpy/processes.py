@@ -151,12 +151,14 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
     _spec_class = ProcessSpec
     # Default placeholders, will be populated in init()
     _stepping = False
+    _step_loop_running = False  # True while step_until_terminated() is active
     _pausing: Optional[futures.CancellableAction] = None
     _paused: Optional[persistence.SavableFuture] = None
     _killing: Optional[futures.CancellableAction] = None
     _interrupt_action: Optional[futures.CancellableAction] = None
     _closed = False
     _cleanups: Optional[List[Callable[[], None]]] = None
+    _launcher: Optional['process_comms.ProcessLauncher'] = None
 
     __called: bool = False
 
@@ -1192,6 +1194,9 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
         """
         Play a process. Returns True if after this call the process is playing, False otherwise.
 
+        If the process was paused and the step loop has exited, this will restart the step loop
+        to continue execution in the current OS process.
+
         :return: True if playing, False otherwise
         """
         if not self.paused:
@@ -1203,6 +1208,11 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
             return True
 
         call_with_super_check(self.on_playing)
+
+        # If the step loop has exited (due to pause), restart it to continue execution
+        if not self._step_loop_running and not self.has_terminated():
+            asyncio.ensure_future(self.step_until_terminated())
+
         return True
 
     @event(from_states=process_states.Waiting)
@@ -1370,16 +1380,20 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
         This is the function run by the event loop (not ``step``).
 
         If the process is paused, this method exits cleanly (catches PauseInterruption),
-        releasing the task from the queue. The process can later be resumed via a continue task.
+        releasing the task from the queue. The process can later be resumed via a continue task
+        or by calling play() which will restart this loop.
         """
+        self._step_loop_running = True
         try:
             while not self.has_terminated():
                 await self.step()
         except process_states.PauseInterruption:
             # Process was paused - exit to release the task from the queue.
-            # The process can be resumed via a continue task (play_process).
-            LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
+            # The process can be resumed via a continue task (play_process) or play().
+            _LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
             return
+        finally:
+            self._step_loop_running = False
 
     # endregion
 
