@@ -39,6 +39,7 @@ class Intent:
     PAUSE: str = 'pause'
     KILL: str = 'kill'
     STATUS: str = 'status'
+    CONTINUE: str = 'continue'
 
 
 MessageType = Dict[str, Any]
@@ -77,6 +78,14 @@ class MessageBuilder:
         """The status message send over communicator."""
         return {
             INTENT_KEY: Intent.STATUS,
+            MESSAGE_TEXT_KEY: text,
+        }
+
+    @classmethod
+    def continue_(cls, text: str | None = None) -> MessageType:
+        """The continue message send over communicator."""
+        return {
+            INTENT_KEY: Intent.CONTINUE,
             MESSAGE_TEXT_KEY: text,
         }
 
@@ -217,14 +226,19 @@ class RemoteProcessController:
         result = await asyncio.wrap_future(future)
         return result
 
-    async def play_process(self, pid: 'PID_TYPE') -> 'ProcessResult':
+    async def play_process(self, pid: 'PID_TYPE', msg_text: Optional[str] = None) -> 'ProcessResult':
         """
-        Play the process by submitting a continue task.
+        Continue (play) the process via RPC.
 
-        :param pid: the pid of the process to play
-        :return: True if played, False otherwise
+        :param pid: the pid of the process to continue
+        :param msg_text: optional message
+        :return: True if continued, False otherwise
         """
-        return await self.continue_process(pid)
+        msg = MessageBuilder.continue_(text=msg_text)
+        future = self._communicator.rpc_send(pid, msg)
+        future = await asyncio.wrap_future(future)
+        result = await asyncio.wrap_future(future)
+        return result
 
     async def kill_process(
         self, pid: 'PID_TYPE', msg_text: Optional[str] = None, force_kill: bool = False
@@ -384,14 +398,16 @@ class RemoteProcessThreadController:
         msg = MessageBuilder.pause(text=msg_text)
         self._communicator.broadcast_send(msg, subject=Intent.PAUSE)
 
-    def play_process(self, pid: 'PID_TYPE') -> Union[None, PID_TYPE, ProcessResult]:
+    def play_process(self, pid: 'PID_TYPE', msg_text: Optional[str] = None) -> kiwipy.Future:
         """
-        Play the process by submitting a continue task.
+        Continue (play) the process via RPC.
 
-        :param pid: the pid of the process to play
-        :return: the result from continue_process
+        :param pid: the pid of the process to continue
+        :param msg_text: optional message
+        :return: a response future from the process
         """
-        return self.continue_process(pid)
+        msg = MessageBuilder.continue_(text=msg_text)
+        return self._communicator.rpc_send(pid, msg)
 
     def play_all(self) -> None:
         """
