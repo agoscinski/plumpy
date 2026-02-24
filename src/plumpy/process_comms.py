@@ -219,15 +219,12 @@ class RemoteProcessController:
 
     async def play_process(self, pid: 'PID_TYPE') -> 'ProcessResult':
         """
-        Play the process
+        Play the process by submitting a continue task.
 
         :param pid: the pid of the process to play
         :return: True if played, False otherwise
         """
-        play_future = self._communicator.rpc_send(pid, MessageBuilder.play())
-        future = await asyncio.wrap_future(play_future)
-        result = await asyncio.wrap_future(future)
-        return result
+        return await self.continue_process(pid)
 
     async def kill_process(
         self, pid: 'PID_TYPE', msg_text: Optional[str] = None, force_kill: bool = False
@@ -387,15 +384,14 @@ class RemoteProcessThreadController:
         msg = MessageBuilder.pause(text=msg_text)
         self._communicator.broadcast_send(msg, subject=Intent.PAUSE)
 
-    def play_process(self, pid: 'PID_TYPE') -> kiwipy.Future:
+    def play_process(self, pid: 'PID_TYPE') -> Union[None, PID_TYPE, ProcessResult]:
         """
-        Play the process
+        Play the process by submitting a continue task.
 
-        :param pid: the pid of the process to pause
-        :return: a response future from the process to be played
-
+        :param pid: the pid of the process to play
+        :return: the result from continue_process
         """
-        return self._communicator.rpc_send(pid, MessageBuilder.play())
+        return self.continue_process(pid)
 
     def play_all(self) -> None:
         """

@@ -1311,7 +1311,7 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
         return self.future().result()
 
     @ensure_not_closed
-    async def step(self) -> bool:
+    async def step(self) -> None:
         """Run a step.
 
         The step is run synchronously with steps in its own process,
@@ -1319,7 +1319,7 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         The execute function running in this method is dependent on the state of the process.
 
-        :return: True if stepping should continue, False if paused and should exit step loop.
+        :raises PauseInterruption: If the process was paused during this step.
         """
         assert not self.has_terminated(), 'Cannot step, already terminated'
 
@@ -1352,14 +1352,12 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
             if self._interrupt_action and not self._interrupt_action.cancelled():
                 interrupt_exception = self._interrupt_action.cookie
                 self._interrupt_action.run(next_state)
-                # If a pause action was executed, return False to signal step_until_terminated() to exit
+                # If a pause action was executed, re-raise to signal step_until_terminated() to exit
                 if isinstance(interrupt_exception, process_states.PauseInterruption):
-                    return False
+                    raise interrupt_exception
             else:
                 # Everything nominal so transition to the next state
                 self.transition_to(next_state)
-
-            return True
 
         finally:
             self._stepping = False
@@ -1371,15 +1369,17 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         This is the function run by the event loop (not ``step``).
 
-        If the process is paused, this method exits cleanly (step() returns False),
+        If the process is paused, this method exits cleanly (catches PauseInterruption),
         releasing the task from the queue. The process can later be resumed via a continue task.
         """
-        while not self.has_terminated():
-            if not await self.step():
-                # Process was paused - exit to release the task from the queue.
-                # The process can be resumed via a continue task (play_process).
-                LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
-                return
+        try:
+            while not self.has_terminated():
+                await self.step()
+        except process_states.PauseInterruption:
+            # Process was paused - exit to release the task from the queue.
+            # The process can be resumed via a continue task (play_process).
+            LOGGER.info('Process<%s> paused, releasing task from queue', self.pid)
+            return
 
     # endregion
 
