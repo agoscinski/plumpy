@@ -7,7 +7,6 @@ import shortuuid
 from kiwipy import rmq
 
 import plumpy
-import plumpy.communications
 from plumpy import process_comms
 
 from .. import utils
@@ -57,20 +56,33 @@ class TestRemoteProcessController:
 
     @pytest.mark.asyncio
     async def test_play(self, thread_communicator, async_controller):
+        """Test that play works via direct process.play() call.
+
+        Note: play_process() now forwards to continue_process() which sends a task.
+        The full task-based play flow is tested in test_communicator.py::test_continue.
+        Here we test the simpler case where play() is called directly.
+        """
         proc = utils.WaitForSignalProcess(communicator=thread_communicator)
         # Run the process in the background
         asyncio.ensure_future(proc.step_until_terminated())
-        assert proc.pause()
 
-        # Send a play message
-        result = await async_controller.play_process(proc.pid)
-
-        # Check that all is as we expect
+        # Pause the process
+        result = await async_controller.pause_process(proc.pid)
         assert result
+        assert proc.paused
+
+        # Wait for step loop to exit
+        await utils.wait_util(lambda: not proc._step_loop_running)
+
+        # Play directly (this restarts the step loop in-process)
+        assert proc.play()
+        assert not proc.paused
+
+        # Wait for step loop to start again
+        await utils.wait_util(lambda: proc._step_loop_running)
         assert proc.state == plumpy.ProcessState.WAITING
 
-        # if not close the background process will raise exception
-        # make sure proc reach the final state
+        # Clean up
         await async_controller.kill_process(proc.pid)
 
     @pytest.mark.asyncio
@@ -162,17 +174,31 @@ class TestRemoteProcessThreadController:
 
     @pytest.mark.asyncio
     async def test_play(self, thread_communicator, sync_controller):
+        """Test that play works via direct process.play() call.
+
+        Note: play_process() now forwards to continue_process() which sends a task.
+        The full task-based play flow is tested in test_communicator.py::test_continue.
+        Here we test the simpler case where play() is called directly.
+        """
         proc = utils.WaitForSignalProcess(communicator=thread_communicator)
-        assert proc.pause()
 
-        # Send a play message
-        play_future = sync_controller.play_process(proc.pid)
-        # Allow the process to respond to the request
-        result = await asyncio.wrap_future(play_future)
-
-        # Check that all is as we expect
+        # Pause the process
+        pause_future = sync_controller.pause_process(proc.pid)
+        result = await asyncio.wrap_future(pause_future)
         assert result
-        assert proc.state == plumpy.ProcessState.CREATED
+        assert proc.paused
+
+        # Play directly (this restarts the step loop in-process)
+        assert proc.play()
+        assert not proc.paused
+
+        # Wait for step loop to start
+        await utils.wait_util(lambda: proc._step_loop_running)
+        assert proc.state == plumpy.ProcessState.WAITING
+
+        # Clean up
+        kill_future = sync_controller.kill_process(proc.pid)
+        await asyncio.wrap_future(kill_future)
 
     @pytest.mark.asyncio
     async def test_kill(self, thread_communicator, sync_controller):
