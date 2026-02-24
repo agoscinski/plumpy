@@ -51,10 +51,7 @@ class MessageBuilder:
     @classmethod
     def play(cls, text: str | None = None) -> MessageType:
         """The play message send over communicator."""
-        return {
-            INTENT_KEY: Intent.PLAY,
-            MESSAGE_TEXT_KEY: text,
-        }
+        return MessageBuilder.continue_(text)
 
     @classmethod
     def pause(cls, text: str | None = None) -> MessageType:
@@ -406,6 +403,7 @@ class RemoteProcessThreadController:
         :param msg_text: optional message
         :return: a response future from the process
         """
+        self.continue_process(pid, msg_text, nowait=False, no_reply=False)
         msg = MessageBuilder.continue_(text=msg_text)
         return self._communicator.rpc_send(pid, msg)
 
