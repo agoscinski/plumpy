@@ -150,7 +150,7 @@ class TestRemoteProcessThreadController:
 
     @pytest.mark.asyncio
     async def test_play_all(self, thread_communicator, sync_controller):
-        """Test pausing all processes on a communicator"""
+        """Test playing all processes on a communicator"""
         procs = []
         for _ in range(10):
             proc = utils.WaitForSignalProcess(communicator=thread_communicator)
@@ -159,8 +159,13 @@ class TestRemoteProcessThreadController:
 
         assert all([proc.paused for proc in procs])
         sync_controller.play_all()
-        # Wait until they are all paused
+        # Wait until they are all playing (not paused)
         await utils.wait_util(lambda: all([not proc.paused for proc in procs]))
+
+        # PRCOMMENT: This change is needed because play is not starting the step loop keeping a reference of the communicator that is closed after the test
+        # Clean up: kill all processes and wait for them to terminate
+        sync_controller.kill_all(msg_text='cleanup')
+        await utils.wait_util(lambda: all([proc.has_terminated() for proc in procs]))
 
     @pytest.mark.asyncio
     async def test_play(self, thread_communicator, sync_controller):
