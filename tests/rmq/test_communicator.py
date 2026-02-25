@@ -259,6 +259,9 @@ class TestPauseReleasesTaskSlot:
             async_controller.launch_process(utils.WaitForSignalProcess, nowait=False)
         )
 
+        # Give time for the first task to be picked up by the worker
+        await asyncio.sleep(0.1)
+
         # Launch second process - with prefetch_count=1, this will queue behind the first.
         # Since WaitForSignalProcess doesn't pause, slot stays blocked and this should timeout.
         with pytest.raises(asyncio.TimeoutError):
