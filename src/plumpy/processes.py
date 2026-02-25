@@ -158,7 +158,6 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
     _interrupt_action: Optional[futures.CancellableAction] = None
     _closed = False
     _cleanups: Optional[List[Callable[[], None]]] = None
-    _launcher: Optional['process_comms.ProcessLauncher'] = None
 
     __called: bool = False
 
