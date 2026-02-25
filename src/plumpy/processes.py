@@ -1211,9 +1211,10 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         call_with_super_check(self.on_playing)
 
-        # If the step loop has exited (due to pause), restart it to continue execution
+        # If the step loop is not running, restart it to continue execution
+        # Use run_coroutine_threadsafe in case play() is called from a different thread (e.g., RPC)
         if not self._step_loop_running and not self.has_terminated():
-            asyncio.ensure_future(self.step_until_terminated())
+            asyncio.run_coroutine_threadsafe(self.step_until_terminated(), self._loop)
 
         return True
 
