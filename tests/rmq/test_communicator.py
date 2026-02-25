@@ -218,7 +218,7 @@ class TestPauseReleasesTaskSlot:
         If the first process pauses and releases its slot, the second task
         should be able to run.
         """
-        loop = asyncio.get_event_loop()
+        loop = plumpy.get_or_create_event_loop()
         loop_communicator.add_task_subscriber(
             plumpy.ProcessLauncher(loop, persister=persister)
         )
@@ -248,7 +248,7 @@ class TestPauseReleasesTaskSlot:
         With prefetch_count=1, only one task can be processed at a time.
         If the first process does NOT pause, the second task should be blocked.
         """
-        loop = asyncio.get_event_loop()
+        loop = plumpy.get_or_create_event_loop()
         loop_communicator.add_task_subscriber(
             plumpy.ProcessLauncher(loop, persister=persister)
         )
