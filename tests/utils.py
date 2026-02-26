@@ -82,6 +82,19 @@ class WaitForSignalProcess(processes.Process):
         pass
 
 
+class AutoPauseProcess(processes.Process):
+    """Process that auto-pauses itself during run, releasing the task slot."""
+
+    @utils.override
+    def run(self):
+        self.pause()
+        # After pause, return Wait so process can be continued later
+        return process_states.Wait(self.last_step)
+
+    def last_step(self):
+        pass
+
+
 class KillProcess(processes.Process):
     def __init__(self, force_kill: bool):
         super().__init__()

@@ -29,18 +29,22 @@ def persister():
 
 
 @pytest.fixture
-def loop_communicator():
+def loop_communicator(request):
     message_exchange = f'{__file__}.{shortuuid.uuid()}'
     task_exchange = f'{__file__}.{shortuuid.uuid()}'
     task_queue = f'{__file__}.{shortuuid.uuid()}'
     encoder = functools.partial(yaml.dump, encoding='utf-8')
     decoder = functools.partial(yaml.load, Loader=yaml.FullLoader)
 
+    # Allow tests to override task_prefetch_count via indirect parametrization
+    task_prefetch_count = getattr(request, 'param', {}).get('task_prefetch_count', 0)
+
     thread_communicator = rmq.RmqThreadCommunicator.connect(
         connection_params={'url': 'amqp://guest:guest@localhost:5672/'},
         message_exchange=message_exchange,
         task_exchange=task_exchange,
         task_queue=task_queue,
+        task_prefetch_count=task_prefetch_count,
         encoder=encoder,
         decoder=decoder,
     )
@@ -200,3 +204,67 @@ class TestTaskActions:
         # Let the process run to the end
         result = await async_controller.continue_process(pid)
         assert result, utils.DummyProcessWithOutput.EXPECTED_OUTPUTS
+
+class TestPauseReleasesTaskSlot:
+    """Test that pausing a process releases its RabbitMQ task slot."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('loop_communicator', [{'task_prefetch_count': 1}], indirect=True)
+    async def test_pause_releases_task_slot(self, loop_communicator, async_controller, persister):
+        """
+        Test that when a process pauses (via auto-pause), it releases the task slot.
+
+        With prefetch_count=1, only one task can be processed at a time.
+        If the first process pauses and releases its slot, the second task
+        should be able to run.
+        """
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(
+            plumpy.ProcessLauncher(loop, persister=persister)
+        )
+
+        # Launch auto-pause process with nowait=False so task slot stays occupied
+        # until the process pauses (when step_until_terminated exits via PauseInterruption)
+        asyncio.ensure_future(
+            async_controller.launch_process(utils.AutoPauseProcess, nowait=False)
+        )
+
+        # Launch second process - with prefetch_count=1, this will queue behind the first.
+        # It will only complete once the first task slot is released (when auto-pause triggers).
+        # If the slot is NOT released, this will timeout.
+        result = await asyncio.wait_for(
+            async_controller.launch_process(utils.DummyProcess), timeout=1.0
+        )
+
+        # Second process should have completed successfully
+        assert result == utils.DummyProcess.EXPECTED_OUTPUTS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('loop_communicator', [{'task_prefetch_count': 1}], indirect=True)
+    async def test_no_pause_blocks_task_slot(self, loop_communicator, async_controller, persister):
+        """
+        Test that without pause, the task slot stays blocked.
+
+        With prefetch_count=1, only one task can be processed at a time.
+        If the first process does NOT pause, the second task should be blocked.
+        """
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(
+            plumpy.ProcessLauncher(loop, persister=persister)
+        )
+
+        # Launch WaitForSignalProcess with nowait=False so task slot stays occupied
+        # This process waits indefinitely and won't pause on its own
+        asyncio.ensure_future(
+            async_controller.launch_process(utils.WaitForSignalProcess, nowait=False)
+        )
+
+        # Give time for the first task to be picked up by the worker
+        await asyncio.sleep(0.1)
+
+        # Launch second process - with prefetch_count=1, this will queue behind the first.
+        # Since WaitForSignalProcess doesn't pause, slot stays blocked and this should timeout.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                async_controller.launch_process(utils.DummyProcess), timeout=1.0
+            )

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import shutil
+import tempfile
 
 import kiwipy
 import pytest
@@ -8,9 +10,19 @@ from kiwipy import rmq
 
 import plumpy
 import plumpy.communications
-from plumpy import process_comms
+from plumpy import communications, process_comms
 
 from .. import utils
+
+
+@pytest.fixture
+def persister():
+    _tmppath = tempfile.mkdtemp()
+    persister = plumpy.PicklePersister(_tmppath)
+
+    yield persister
+
+    shutil.rmtree(_tmppath)
 
 
 @pytest.fixture
@@ -30,6 +42,30 @@ def thread_communicator():
     yield communicator
 
     communicator.close()
+
+
+@pytest.fixture
+def loop_communicator():
+    """Communicator wrapped with LoopCommunicator for proper async task handling."""
+    message_exchange = f'{__file__}.{shortuuid.uuid()}'
+    task_exchange = f'{__file__}.{shortuuid.uuid()}'
+    task_queue = f'{__file__}.{shortuuid.uuid()}'
+
+    thread_communicator = rmq.RmqThreadCommunicator.connect(
+        connection_params={'url': 'amqp://guest:guest@localhost:5672/'},
+        message_exchange=message_exchange,
+        task_exchange=task_exchange,
+        task_queue=task_queue,
+    )
+
+    loop = plumpy.get_or_create_event_loop()
+    loop.set_debug(True)
+
+    communicator = communications.LoopCommunicator(thread_communicator, loop=loop)
+
+    yield communicator
+
+    thread_communicator.close()
 
 
 @pytest.fixture
@@ -56,22 +92,27 @@ class TestRemoteProcessController:
         assert proc.paused
 
     @pytest.mark.asyncio
-    async def test_play(self, thread_communicator, async_controller):
-        proc = utils.WaitForSignalProcess(communicator=thread_communicator)
+    async def test_play(self, loop_communicator, persister):
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(plumpy.ProcessLauncher(loop, persister=persister))
+
+        proc = utils.WaitForSignalProcess(communicator=loop_communicator)
         # Run the process in the background
         asyncio.ensure_future(proc.step_until_terminated())
-        assert proc.pause()
 
-        # Send a play message
-        result = await async_controller.play_process(proc.pid)
+        # Wait for process to reach WAITING state, then save checkpoint before pausing
+        await utils.wait_util(lambda: proc.state == plumpy.ProcessState.WAITING)
+        persister.save_checkpoint(proc)
 
-        # Check that all is as we expect
-        assert result
-        assert proc.state == plumpy.ProcessState.WAITING
+        proc.pause()
 
-        # if not close the background process will raise exception
-        # make sure proc reach the final state
-        await async_controller.kill_process(proc.pid)
+        # Wait for pause to complete and step loop to exit
+        await utils.wait_util(lambda: proc.paused and not proc._step_loop_running)
+
+        # Send a play message - creates new process from checkpoint
+        controller = process_comms.RemoteProcessController(loop_communicator)
+        result = await controller.play_process(proc.pid)
+        assert result == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill(self, thread_communicator, async_controller):
@@ -148,7 +189,7 @@ class TestRemoteProcessThreadController:
 
     @pytest.mark.asyncio
     async def test_play_all(self, thread_communicator, sync_controller):
-        """Test pausing all processes on a communicator"""
+        """Test playing all processes on a communicator"""
         procs = []
         for _ in range(10):
             proc = utils.WaitForSignalProcess(communicator=thread_communicator)
@@ -157,22 +198,39 @@ class TestRemoteProcessThreadController:
 
         assert all([proc.paused for proc in procs])
         sync_controller.play_all()
-        # Wait until they are all paused
+        # Wait until they are all playing (not paused)
         await utils.wait_util(lambda: all([not proc.paused for proc in procs]))
 
+        # PRCOMMENT: This change is needed because play is not starting the step loop keeping a reference of the communicator that is closed after the test
+        # Clean up: kill all processes and wait for them to terminate
+        sync_controller.kill_all(msg_text='cleanup')
+        await utils.wait_util(lambda: all([proc.has_terminated() for proc in procs]))
+
     @pytest.mark.asyncio
-    async def test_play(self, thread_communicator, sync_controller):
-        proc = utils.WaitForSignalProcess(communicator=thread_communicator)
-        assert proc.pause()
+    async def test_play(self, loop_communicator, persister):
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(plumpy.ProcessLauncher(loop, persister=persister))
 
-        # Send a play message
-        play_future = sync_controller.play_process(proc.pid)
-        # Allow the process to respond to the request
-        result = await asyncio.wrap_future(play_future)
+        proc = utils.WaitForSignalProcess(communicator=loop_communicator)
+        # Run the process in the background
+        asyncio.ensure_future(proc.step_until_terminated())
 
-        # Check that all is as we expect
-        assert result
-        assert proc.state == plumpy.ProcessState.CREATED
+        # Wait for process to reach WAITING state, then save checkpoint before pausing
+        await utils.wait_util(lambda: proc.state == plumpy.ProcessState.WAITING)
+        persister.save_checkpoint(proc)
+
+        proc.pause()
+
+        # Wait for pause to complete and step loop to exit
+        await utils.wait_util(lambda: proc.paused and not proc._step_loop_running)
+
+        # Send a play message - creates new process from checkpoint
+        controller = process_comms.RemoteProcessThreadController(loop_communicator)
+        play_future = controller.play_process(proc.pid)
+        # Unwrap nested futures: task_send returns Future[Future[result]]
+        future = await asyncio.wrap_future(play_future)
+        result = await asyncio.wrap_future(future)
+        assert result == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill(self, thread_communicator, sync_controller):
