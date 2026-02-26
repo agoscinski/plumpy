@@ -219,13 +219,13 @@ class RemoteProcessController:
 
     async def play_process(self, pid: 'PID_TYPE', msg_text: Optional[str] = None) -> 'ProcessResult':
         """
-        Continue (play) the process via RPC.
+        Continue (play) the process via task queue.
 
         :param pid: the pid of the process to continue
         :param msg_text: optional message
-        :return: True if continued, False otherwise
+        :return: the PID of the continued process
         """
-        return self.continue_process(pid, nowait=False, no_reply=False)
+        return await self.continue_process(pid, nowait=True, no_reply=False)
 
     async def kill_process(
         self, pid: 'PID_TYPE', msg_text: Optional[str] = None, force_kill: bool = False
@@ -387,13 +387,13 @@ class RemoteProcessThreadController:
 
     def play_process(self, pid: 'PID_TYPE', msg_text: Optional[str] = None) -> kiwipy.Future:
         """
-        Continue (play) the process via RPC.
+        Continue (play) the process via task queue.
 
         :param pid: the pid of the process to continue
         :param msg_text: optional message
-        :return: a response future from the process
+        :return: a future that resolves to the PID of the continued process
         """
-        return self.continue_process(pid, nowait=False, no_reply=False)
+        return self.continue_process(pid, nowait=True, no_reply=False)
 
     def play_all(self) -> None:
         """

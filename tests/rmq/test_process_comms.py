@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import shutil
+import tempfile
 
 import kiwipy
 import pytest
@@ -8,9 +10,19 @@ from kiwipy import rmq
 
 import plumpy
 import plumpy.communications
-from plumpy import process_comms
+from plumpy import communications, process_comms
 
 from .. import utils
+
+
+@pytest.fixture
+def persister():
+    _tmppath = tempfile.mkdtemp()
+    persister = plumpy.PicklePersister(_tmppath)
+
+    yield persister
+
+    shutil.rmtree(_tmppath)
 
 
 @pytest.fixture
@@ -30,6 +42,30 @@ def thread_communicator():
     yield communicator
 
     communicator.close()
+
+
+@pytest.fixture
+def loop_communicator():
+    """Communicator wrapped with LoopCommunicator for proper async task handling."""
+    message_exchange = f'{__file__}.{shortuuid.uuid()}'
+    task_exchange = f'{__file__}.{shortuuid.uuid()}'
+    task_queue = f'{__file__}.{shortuuid.uuid()}'
+
+    thread_communicator = rmq.RmqThreadCommunicator.connect(
+        connection_params={'url': 'amqp://guest:guest@localhost:5672/'},
+        message_exchange=message_exchange,
+        task_exchange=task_exchange,
+        task_queue=task_queue,
+    )
+
+    loop = plumpy.get_or_create_event_loop()
+    loop.set_debug(True)
+
+    communicator = communications.LoopCommunicator(thread_communicator, loop=loop)
+
+    yield communicator
+
+    thread_communicator.close()
 
 
 @pytest.fixture
@@ -56,24 +92,27 @@ class TestRemoteProcessController:
         assert proc.paused
 
     @pytest.mark.asyncio
-    async def test_play(self, thread_communicator, async_controller):
-        proc = utils.WaitForSignalProcess(communicator=thread_communicator)
+    async def test_play(self, loop_communicator, persister):
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(plumpy.ProcessLauncher(loop, persister=persister))
+
+        proc = utils.WaitForSignalProcess(communicator=loop_communicator)
         # Run the process in the background
         asyncio.ensure_future(proc.step_until_terminated())
-        assert proc.pause()
 
-        # Wait for step loop to exit (process paused)
-        await utils.wait_util(lambda: not proc._step_loop_running)
-
-        # Send a play message
-        result = await async_controller.play_process(proc.pid)
-        assert result
-
-        # Wait for step loop to restart and reach WAITING state
+        # Wait for process to reach WAITING state, then save checkpoint before pausing
         await utils.wait_util(lambda: proc.state == plumpy.ProcessState.WAITING)
+        persister.save_checkpoint(proc)
 
-        # Clean up
-        await async_controller.kill_process(proc.pid)
+        proc.pause()
+
+        # Wait for pause to complete and step loop to exit
+        await utils.wait_util(lambda: proc.paused and not proc._step_loop_running)
+
+        # Send a play message - creates new process from checkpoint
+        controller = process_comms.RemoteProcessController(loop_communicator)
+        result = await controller.play_process(proc.pid)
+        assert result == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill(self, thread_communicator, async_controller):
@@ -168,26 +207,30 @@ class TestRemoteProcessThreadController:
         await utils.wait_util(lambda: all([proc.has_terminated() for proc in procs]))
 
     @pytest.mark.asyncio
-    async def test_play(self, thread_communicator, sync_controller):
-        proc = utils.WaitForSignalProcess(communicator=thread_communicator)
+    async def test_play(self, loop_communicator, persister):
+        loop = plumpy.get_or_create_event_loop()
+        loop_communicator.add_task_subscriber(plumpy.ProcessLauncher(loop, persister=persister))
+
+        proc = utils.WaitForSignalProcess(communicator=loop_communicator)
         # Run the process in the background
         asyncio.ensure_future(proc.step_until_terminated())
-        assert proc.pause()
 
-        # Wait for step loop to exit (process paused)
-        await utils.wait_util(lambda: not proc._step_loop_running)
-
-        # Send a play message
-        play_future = sync_controller.play_process(proc.pid)
-        result = await asyncio.wrap_future(play_future)
-        assert result
-
-        # Wait for step loop to restart and reach WAITING state
+        # Wait for process to reach WAITING state, then save checkpoint before pausing
         await utils.wait_util(lambda: proc.state == plumpy.ProcessState.WAITING)
+        persister.save_checkpoint(proc)
 
-        # Clean up
-        kill_future = sync_controller.kill_process(proc.pid)
-        await asyncio.wrap_future(kill_future)
+        proc.pause()
+
+        # Wait for pause to complete and step loop to exit
+        await utils.wait_util(lambda: proc.paused and not proc._step_loop_running)
+
+        # Send a play message - creates new process from checkpoint
+        controller = process_comms.RemoteProcessThreadController(loop_communicator)
+        play_future = controller.play_process(proc.pid)
+        # Unwrap nested futures: task_send returns Future[Future[result]]
+        future = await asyncio.wrap_future(play_future)
+        result = await asyncio.wrap_future(future)
+        assert result == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill(self, thread_communicator, sync_controller):
