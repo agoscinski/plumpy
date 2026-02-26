@@ -39,7 +39,6 @@ class Intent:
     PAUSE: str = 'pause'
     KILL: str = 'kill'
     STATUS: str = 'status'
-    CONTINUE: str = 'continue'
 
 
 MessageType = Dict[str, Any]
@@ -51,7 +50,10 @@ class MessageBuilder:
     @classmethod
     def play(cls, text: str | None = None) -> MessageType:
         """The play message send over communicator."""
-        return MessageBuilder.continue_(text)
+        return {
+            INTENT_KEY: Intent.PLAY,
+            MESSAGE_TEXT_KEY: text,
+        }
 
     @classmethod
     def pause(cls, text: str | None = None) -> MessageType:
@@ -75,14 +77,6 @@ class MessageBuilder:
         """The status message send over communicator."""
         return {
             INTENT_KEY: Intent.STATUS,
-            MESSAGE_TEXT_KEY: text,
-        }
-
-    @classmethod
-    def continue_(cls, text: str | None = None) -> MessageType:
-        """The continue message send over communicator."""
-        return {
-            INTENT_KEY: Intent.CONTINUE,
             MESSAGE_TEXT_KEY: text,
         }
 
@@ -231,11 +225,7 @@ class RemoteProcessController:
         :param msg_text: optional message
         :return: True if continued, False otherwise
         """
-        msg = MessageBuilder.continue_(text=msg_text)
-        future = self._communicator.rpc_send(pid, msg)
-        future = await asyncio.wrap_future(future)
-        result = await asyncio.wrap_future(future)
-        return result
+        return self.continue_process(pid, nowait=False, no_reply=False)
 
     async def kill_process(
         self, pid: 'PID_TYPE', msg_text: Optional[str] = None, force_kill: bool = False
@@ -403,9 +393,7 @@ class RemoteProcessThreadController:
         :param msg_text: optional message
         :return: a response future from the process
         """
-        self.continue_process(pid, msg_text, nowait=False, no_reply=False)
-        msg = MessageBuilder.continue_(text=msg_text)
-        return self._communicator.rpc_send(pid, msg)
+        return self.continue_process(pid, nowait=False, no_reply=False)
 
     def play_all(self) -> None:
         """

@@ -960,8 +960,6 @@ class Process(StateMachine, persistence.Savable, metaclass=ProcessStateMachineMe
 
         if intent == process_comms.Intent.PLAY:
             return self._schedule_rpc(self.play)
-        if intent == process_comms.Intent.CONTINUE:
-            return self._schedule_rpc(self.play)
         if intent == process_comms.Intent.PAUSE:
             return self._schedule_rpc(self.pause, msg_text=msg.get(process_comms.MESSAGE_TEXT_KEY, None))
         if intent == process_comms.Intent.KILL:
